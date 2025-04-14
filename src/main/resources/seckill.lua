@@ -3,7 +3,7 @@
  local voucherId = ARGV[1]
  -- 用户id
  local userId= ARGV[2]
- -- 用户id
+ -- 订单id
  local orderId= ARGV[3]
 
 -- 数据key
@@ -19,7 +19,7 @@ if(tonumber(redis.call('get', stockKey)) <= 0) then
     return 1
 end
 
--- 判断用户是否下单
+-- 判断用户是否重复下单
 if (redis.call('sismember', orderKey, userId) == 1) then
     -- 重复下单
     return 2

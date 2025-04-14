@@ -127,12 +127,12 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                     VoucherOrder voucherOrder = BeanUtil.fillBeanWithMap(values, new VoucherOrder(), true);
 
                     //获取成功，可以下单
-                    handleVoucherOrder(voucherOrder);
+                     handleVoucherOrder(voucherOrder);
 
                     //ACK确认
                     stringRedisTemplate.opsForStream().acknowledge(queueName, "g1", record.getId());
                 } catch (Exception e) {
-                    log.error("处理订单异常:{}", e.getMessage());
+                    log.error("处理pending-list订单异常:{}", e.getMessage());
                     try {
                         Thread.sleep(20);
                     } catch (InterruptedException ex) {
