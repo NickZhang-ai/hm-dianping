@@ -1,5 +1,6 @@
 package com.hmdp.service;
 
+import com.hmdp.dto.OrderPaymentDTO;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.VoucherOrder;
 import com.baomidou.mybatisplus.extension.service.IService;
@@ -25,4 +26,6 @@ public interface IVoucherOrderService extends IService<VoucherOrder> {
     Result limitVoucher1(Long voucherId, int buyNumber);
 
     Result limitVoucher2(Long voucherId, int buyNumber);
+
+    Result payment(OrderPaymentDTO orderPaymentDTO);
 }

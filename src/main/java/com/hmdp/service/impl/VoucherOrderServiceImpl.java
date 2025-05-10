@@ -2,10 +2,12 @@ package com.hmdp.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.hmdp.dto.OrderPaymentDTO;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.LimitVoucher;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.mapper.VoucherOrderMapper;
+import com.hmdp.service.ICommonVoucherService;
 import com.hmdp.service.ILimitVoucherService;
 import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherOrderService;
@@ -51,6 +53,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
     @Resource
     private ILimitVoucherService limitVoucherService;
+
+    @Resource
+    private ICommonVoucherService commonVoucherService;
 
     @Resource
     private RedisIdWorker redisIdWorker;
@@ -457,5 +462,40 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             // 释放锁
             redisLock.unlock();
         }
+    }
+
+    @Override
+    public Result payment(OrderPaymentDTO orderPaymentDTO) {
+        Long orderId = orderPaymentDTO.getOrderId();
+        Integer payType = orderPaymentDTO.getPayType();
+        // 1.查询redis中是否存在此订单
+        boolean isRedisExist = stringRedisTemplate.opsForSet().isMember(RedisConstants.SECKILL_ORDER_KEY, orderId);
+        // 2.查询mysql中是否有此订单
+        Long userId = UserHolder.getUser().getId();
+        VoucherOrder voucherOrder = this.getOne(new LambdaQueryWrapper<VoucherOrder>()
+                .eq(VoucherOrder::getUserId, userId)
+                .eq(VoucherOrder::getId, orderId));
+
+        if (isRedisExist) {
+            // 2. 秒杀订单业务流程
+            if (voucherOrder == null) {
+                //2.1 数据库不存在订单，等待后重试
+                try {
+                    Thread.sleep(1000);
+                    return payment(orderPaymentDTO);
+                } catch (Exception e) {
+                    return Result.fail("未知错误");
+                }
+            }
+        } else {
+            // 3.普通、限购订单业务流程
+            if (voucherOrder == null) {
+                //3.1 数据库不存在订单，返回错误信息
+                return Result.fail("订单不存在");
+            }
+        }
+        // 此时已经在mysql查询到订单信息
+        // TODO 3.进入付款流程
+        return Result.ok();
     }
 }
