@@ -1,13 +1,18 @@
 package com.hmdp.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.hmdp.dto.Result;
+import com.hmdp.entity.LimitVoucher;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.mapper.VoucherOrderMapper;
+import com.hmdp.service.ILimitVoucherService;
 import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherOrderService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.hmdp.utils.RedisConstants;
 import com.hmdp.utils.RedisIdWorker;
+import com.hmdp.utils.SystemConstants;
 import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
@@ -23,13 +28,11 @@ import org.springframework.transaction.annotation.Transactional;
 import javax.annotation.PostConstruct;
 import javax.annotation.Resource;
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
 
 /**
  * <p>
@@ -45,6 +48,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
     @Resource
     private ISeckillVoucherService seckillVoucherService;
+
+    @Resource
+    private ILimitVoucherService limitVoucherService;
 
     @Resource
     private RedisIdWorker redisIdWorker;
@@ -322,5 +328,134 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
         //创建订单
         save(voucherOrder);
+    }
+
+    @Override
+    public Result commonVoucher(Long voucherId, int buyNumber) {
+        return null;
+    }
+
+    @Override
+    public Result limitVoucher(Long voucherId, int buyNumber) {
+        return null;
+    }
+
+    @Override
+    public Result limitVoucher1(Long voucherId, int buyNumber) {
+        Long userId = UserHolder.getUser().getId();
+        // 1.查询优惠券
+        LimitVoucher limitVoucher = limitVoucherService.getById(voucherId);
+        Integer limitCount = limitVoucher.getLimitCount();
+
+        // 创建锁对象
+        RLock redisLock = redissonClient.getLock("lock:voucher:" + voucherId + userId);
+
+        try {
+
+            // 2.判断库存是否充足
+            if (limitVoucher.getStock() < buyNumber) {
+                // 库存不足
+                return Result.fail("库存不足！");
+            }
+
+            // 3.判断是否限购
+            // 执行查询
+            List<VoucherOrder> orderList = this.list(new LambdaQueryWrapper<VoucherOrder>()
+                    .eq(VoucherOrder::getUserId, userId)
+                    .eq(VoucherOrder::getVoucherId, voucherId));
+
+            // 计算购买数量总和
+            int totalBuyNumber = orderList.stream()
+                    .mapToInt(VoucherOrder::getBuyNumber)
+                    .sum();
+
+            if (totalBuyNumber + buyNumber > limitCount) {
+                return Result.fail("超过最大购买限制!");
+            }
+
+            // 4. 尝试获取锁，最多等待10s
+            boolean isLock = false;
+            isLock = redisLock.tryLock(10, TimeUnit.SECONDS);
+            // 判断
+            if (!isLock) {
+                // 获取锁失败，直接返回失败或者重试
+                log.error("获取锁失败！");
+                return Result.fail("同一时间下单人数过多，请稍后重试");
+            }
+
+            //5. 乐观锁扣减库存
+            boolean success = limitVoucherService.update()
+                    .setSql("stock= stock -" + buyNumber)
+                    .eq("voucher_id", voucherId)
+                    .ge("stock", buyNumber)
+                    .update(); //where id = ? and stock >= buyNumber
+            if (!success) {
+                //扣减库存
+                return Result.fail("库存不足！");
+            }
+            //6.创建订单
+            VoucherOrder voucherOrder = new VoucherOrder().setId(redisIdWorker.nextId("order"))
+                    .setVoucherId(voucherId)
+                    .setUserId(userId)
+                    .setCreateTime(LocalDateTime.now())
+                    .setUpdateTime(LocalDateTime.now())
+                    .setStatus(1)
+                    .setBuyNumber(buyNumber);
+            save(voucherOrder);
+
+            //7. 返回结果
+            return Result.ok(voucherOrder);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        } finally {
+            redisLock.unlock();
+        }
+    }
+
+    @Override
+    public Result limitVoucher2(Long voucherId, int buyNumber) {
+        Long userId = UserHolder.getUser().getId();
+        // 创建锁对象
+        RLock redisLock = redissonClient.getLock("lock:order:" + voucherId);
+        // 尝试获取锁
+        boolean isLock = redisLock.tryLock();
+        // 判断
+        if (!isLock) {
+            // 获取锁失败，直接返回失败或者重试
+            return Result.fail("不要重复下单");
+        }
+
+        try {
+            // 5.1.查询订单
+            int count = query().eq("user_id", userId).eq("voucher_id", voucherId).count();
+            // 5.2.判断是否存在
+            if (count > SystemConstants.MAX_BUY_LIMIT) {
+                return Result.fail("超过最大购买限制!");
+            }
+
+            // 6.扣减库存
+            boolean success = limitVoucherService.update()
+                    .setSql("stock = stock - " + buyNumber) // set stock = stock - buynumber
+                    .eq("voucher_id", voucherId)
+                    .gt("stock", buyNumber) // where id = ? and stock > buynumber
+                    .update();
+            if (!success) {
+                // 扣减失败
+                return Result.fail("库存不足");
+            }
+            // 7.创建订单
+            VoucherOrder voucherOrder = new VoucherOrder().setId(redisIdWorker.nextId("order"))
+                    .setVoucherId(voucherId)
+                    .setUserId(userId)
+                    .setCreateTime(LocalDateTime.now())
+                    .setUpdateTime(LocalDateTime.now())
+                    .setStatus(1)
+                    .setBuyNumber(buyNumber);
+            save(voucherOrder);
+            return Result.ok(voucherOrder);
+        } finally {
+            // 释放锁
+            redisLock.unlock();
+        }
     }
 }
